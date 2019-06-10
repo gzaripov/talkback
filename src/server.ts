@@ -2,30 +2,26 @@ import http, { Server as HttpServer } from 'http';
 import https, { Server as HttpsServer } from 'https';
 import fs from 'fs';
 import onExit from 'async-exit-hook';
-import Summary from './summary';
-import TapeStoreManager from './tape-store-manager';
-import { parseUrl } from './utils/url';
-import { Context, createContext, Options } from './options';
-import { createTalkbackMiddleware } from './middleware';
+import { urlToListenOptions } from './utils/url';
+import { Context, createContext, Options } from './context';
+import { createFlybackMiddleware } from './middleware';
 
 type Server = HttpServer | HttpsServer;
 
-export default class TalkbackServer {
-  private options: Context;
+export default class FlybackServer {
+  private context: Context;
   private server: Server;
-  public tapeStoreManager: TapeStoreManager;
 
   constructor(options: Options) {
-    this.options = createContext(options);
-    this.tapeStoreManager = new TapeStoreManager(this.options);
-    this.server = this.createServer(createTalkbackMiddleware(this.options, this.tapeStoreManager));
+    this.context = createContext(options);
+    this.server = this.createServer(createFlybackMiddleware(options));
   }
 
-  createServer(requestListener: http.RequestListener): HttpServer | HttpsServer {
-    if (this.options.https) {
+  private createServer(requestListener: http.RequestListener): HttpServer | HttpsServer {
+    if (this.context.https) {
       const httpsOpts = {
-        key: fs.readFileSync(this.options.https.keyPath),
-        cert: fs.readFileSync(this.options.https.certPath),
+        key: fs.readFileSync(this.context.https.keyPath),
+        cert: fs.readFileSync(this.context.https.certPath),
       };
 
       return https.createServer(httpsOpts, requestListener);
@@ -34,12 +30,12 @@ export default class TalkbackServer {
     return http.createServer(requestListener);
   }
 
-  start(callback: () => void) {
-    this.options.logger.log(`Starting talkback on ${this.options.talkbackUrl}`);
-    const url = parseUrl(this.options.talkbackUrl);
+  start(callback?: (error?: Error) => void) {
+    this.context.logger.log(`Starting flyback on ${this.context.flybackUrl}`);
+    const url = urlToListenOptions(this.context.flybackUrl);
     const promise = new Promise((resolve) => {
-      this.server.listen(url, () => {
-        if (callback) callback();
+      this.server.listen(url, (error?: Error) => {
+        if (callback) callback(error);
         resolve(this.server);
       });
     });
@@ -50,25 +46,27 @@ export default class TalkbackServer {
     return promise;
   }
 
-  hasTapeBeenUsed(tapeName: string) {
-    return this.tapeStoreManager.hasTapeBeenUsed(tapeName);
-  }
-
-  resetTapeUsage() {
-    this.tapeStoreManager.resetTapeUsage();
-  }
-
-  close(callback?: () => void) {
-    this.server.close(callback);
-
+  close(callback?: (error?: Error) => void): Promise<void> {
     process.removeListener('exit', this.close);
     process.removeListener('SIGINT', this.close);
     process.removeListener('SIGTERM', this.close);
 
-    if (this.options.summary) {
-      const summary = new Summary(this.tapeStoreManager.getAllTapes(), this.options);
-
-      summary.print();
+    if (this.context.summary) {
+      this.context.tapeAnalyzer.printStatistics();
     }
+
+    return new Promise((resolve, reject) => {
+      this.server.close((error) => {
+        if (callback) {
+          callback(error);
+        }
+
+        if (error) {
+          return reject(error);
+        }
+
+        resolve();
+      });
+    });
   }
 }

@@ -1,105 +1,59 @@
-import MediaType from './utils/media-type';
-import TapeRenderer from './tape-renderer';
-import { Request, Response, Headers } from './http';
-import { Context } from './options';
+import { Request, Response } from './http';
+import { Context } from './context';
+import { RequestJson } from './http/request';
+import { ResponseJson } from './http/response';
 
-type Meta = {
-  createdAt: Date;
-  endpoint: string;
-  [key: string]: any;
+export type TapeJson = {
+  request: RequestJson;
+  response: ResponseJson;
 };
 
-export interface SerializedHeaders {
-  [header: string]: string | string[];
-}
+export default class Tape {
+  public readonly response: Response;
+  private readonly request: Request;
+  // @ts-ignore
+  private readonly context: Context;
 
-export type SerializedTape = {
-  meta: Meta;
-  request: {
-    url: string;
-    method: string;
-    headers: SerializedHeaders;
-    body?: string;
-  };
-  response: {
-    status: number;
-    headers: SerializedHeaders;
-    body?: string;
-  };
-};
+  constructor(request: Request, response: Response, context: Context) {
+    this.request = request;
+    this.response = response;
+    this.context = context;
 
-export type Tape = {
-  meta: Meta;
-  request: Request;
-  response: Response;
-};
+    if (context.tapeDecorator) {
+      const decoratedTapeJson = context.tapeDecorator(this.toJson());
 
-function prettifyJSON(json: string): string {
-  return JSON.stringify(JSON.parse(json), null, 2);
-}
-
-export function createTape(request: Request, response: Response, options: Context): Tape {
-  const mediaType = new MediaType(request.headers);
-
-  if (mediaType.isJSON() && request.body && request.body.length > 0) {
-    request.body = Buffer.from(prettifyJSON(request.body.toString()));
+      return Tape.fromJson(decoratedTapeJson, { ...context, tapeDecorator: undefined });
+    }
   }
 
-  return {
-    meta: {
-      createdAt: new Date(),
-      endpoint: options.proxyUrl,
-    },
-    request,
-    response,
-  };
-}
+  get name() {
+    return this.request.name;
+  }
 
-function createHeadersFromJSON(hds: SerializedHeaders) {
-  const headers: Headers = {};
+  get pathname() {
+    return this.request.pathname;
+  }
 
-  Object.keys(hds).forEach((header) => {
-    const reqHeader = hds[header];
+  get path() {
+    return this.request.fullPath;
+  }
 
-    headers[header] = Array.isArray(reqHeader) ? reqHeader : [reqHeader];
-  });
+  containsRequest(request: Request) {
+    return this.request.equals(request);
+  }
 
-  return headers;
-}
+  toJson(): TapeJson {
+    const { request, response } = this;
 
-export function createTapeFromJSON(serializedTape: SerializedTape): Tape {
-  const { meta, request, response } = serializedTape;
+    return {
+      request: request.toJson(),
+      response: response.toJson(),
+    };
+  }
 
-  const requestHeaders = createHeadersFromJSON(request.headers);
-  const responseHeaders = createHeadersFromJSON(response.headers);
+  static fromJson(tapeJson: TapeJson, context: Context) {
+    const { request, response } = tapeJson;
 
-  const requestEncoding = new MediaType(requestHeaders).isHumanReadable() ? 'utf8' : 'base64';
-  const responseEncoded = new MediaType(responseHeaders).isHumanReadable() ? 'utf8' : 'base64';
-
-  const requestBody =
-    request.body !== undefined ? Buffer.from(request.body, requestEncoding) : undefined;
-  const responseBody =
-    response.body !== undefined ? Buffer.from(response.body, responseEncoded) : undefined;
-
-  const tape = {
-    meta,
-    request: {
-      ...request,
-      body: requestBody,
-      headers: requestHeaders,
-    },
-    response: {
-      ...response,
-      body: responseBody,
-      headers: responseHeaders,
-    },
-  };
-
-  return tape;
-}
-
-export function cloneTape(tape: Tape) {
-  const json = new TapeRenderer(tape).render();
-
-  return createTapeFromJSON(json);
+    return new Tape(Request.fromJson(request, context), Response.fromJson(response), context);
+  }
 }

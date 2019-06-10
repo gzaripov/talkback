@@ -1,17 +1,17 @@
-import { Context } from './options';
+import { Context } from './context';
 
 export default class Logger {
   private options: Context;
 
-  constructor(options?: Context) {
-    this.options = options || ({} as Context);
+  constructor(options: Context = {} as Context) {
+    this.options = options;
     if (this.options.debug) {
       console.debug('DEBUG mode active');
     }
   }
 
   log(message: any) {
-    if (!this.options.silent) {
+    if (this.options.debug || this.options.verbose) {
       console.log(message);
     }
   }

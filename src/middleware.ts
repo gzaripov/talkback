@@ -1,68 +1,32 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import RequestHandler from './request-handler';
-import { Request } from './http';
-import { Options, createContext } from './options';
+import { Options, createContext } from './context';
 import TapeStoreManager from './tape-store-manager';
+import { createRequest } from './create-request';
 
-export function createRequest(im: IncomingMessage, body: Buffer): Request {
-  const { url, method, headers } = im;
-
-  if (!url || !method) {
-    throw new Error(`Invalid incoming message ${im}`);
-  }
-
-  const requestHeaders = Object.keys(headers).reduce((acc, header) => {
-    const headerValue = headers[header];
-
-    if (Array.isArray(headerValue)) {
-      return {
-        ...acc,
-        [header]: headerValue,
-      };
-    }
-
-    return {
-      ...acc,
-      [header]: [headerValue],
-    };
-  }, {});
-
-  return {
-    url,
-    method,
-    headers: requestHeaders,
-    body,
-  };
-}
-
-export const createTalkbackMiddleware = (
-  options: Options,
-  tapeStoreManager = new TapeStoreManager(options),
-) => {
+export const createFlybackMiddleware = (options: Options) => {
   const context = createContext(options);
+  const tapeStoreManager = new TapeStoreManager(options);
+  const requestHandler = new RequestHandler(context, tapeStoreManager);
 
-  return (req: IncomingMessage, res: ServerResponse) => {
-    const reqBodyChunks: Buffer[] = [];
+  return async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    nextFn: (error?: any) => void = () => 0,
+  ) => {
+    try {
+      const request = await createRequest(req, context);
+      const response = await requestHandler.handle(request);
 
-    req
-      .on('data', (chunk) => {
-        reqBodyChunks.push(chunk);
-      })
-      .on('end', async () => {
-        try {
-          const request = createRequest(req, Buffer.concat(reqBodyChunks));
+      response.writeToServerResponse(res);
+      nextFn();
+    } catch (error) {
+      context.logger.error('Error handling request');
+      context.logger.error(error);
+      res.statusCode = 500;
+      res.end(Buffer.from(`Error handling request:\n${error.toString()}`));
 
-          const requestHandler = new RequestHandler(context, tapeStoreManager);
-          const fRes = await requestHandler.handle(request);
-
-          res.writeHead(fRes.status, fRes.headers);
-          res.end(fRes.body);
-        } catch (error) {
-          context.logger.error('Error handling request');
-          context.logger.error(error);
-          res.statusCode = 500;
-          res.end();
-        }
-      });
+      nextFn(error);
+    }
   };
 };

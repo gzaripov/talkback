@@ -1,7 +1,7 @@
 import TapeStore from './tape-store';
-import { Context, Options, createContext } from './options';
+import { Context, Options, createContext } from './context';
 import { Request } from './http';
-import { Tape } from './tape';
+import Tape from './tape';
 
 export default class TapeStoreManager {
   private context: Context;
@@ -13,14 +13,14 @@ export default class TapeStoreManager {
     this.tapeStores = [];
 
     if (this.context.tapesPath) {
-      this.defaultTapeStore = new TapeStore(this.context);
+      this.defaultTapeStore = new TapeStore(this.context.tapesPath, this.context);
       this.tapeStores.push(this.defaultTapeStore);
     }
   }
 
-  getTapeStore(request?: Request) {
-    if (request && this.context.tapePathGenerator) {
-      const path = this.context.tapePathGenerator(request);
+  getTapeStore(request: Request) {
+    if (this.context.tapePathGenerator) {
+      const path = this.context.tapePathGenerator(request.toJson());
 
       if (path) {
         let tapeStore = this.findTapeStore(path);
@@ -29,10 +29,7 @@ export default class TapeStoreManager {
           return tapeStore;
         }
 
-        tapeStore = new TapeStore({
-          ...this.context,
-          tapesPath: path,
-        });
+        tapeStore = new TapeStore(path, this.context);
 
         this.tapeStores.push(tapeStore);
 
@@ -40,9 +37,7 @@ export default class TapeStoreManager {
       }
 
       this.context.logger.log(
-        `tapePathGenerator returned invalid path for ${
-          request.url
-        }, fallback to default tape store`,
+        `tapePathGenerator returned invalid path for ${request.pathname}, fallback to default tape store`,
       );
     }
 
@@ -50,41 +45,17 @@ export default class TapeStoreManager {
       return this.defaultTapeStore;
     }
 
-    throw new Error(
-      'Cant find path for tape store, use options.tapesPath or options.tapePathGenerator',
-    );
+    throw new Error('Cant find path for tape store, use tapesPath or tapePathGenerator options');
   }
 
   findTapeStore(path: string) {
     return this.tapeStores.find((tapeStore) => tapeStore.hasPath(path));
   }
 
-  hasTapeBeenUsed(tapeName: string) {
-    return this.tapeStores.some((tapeStore) => tapeStore.hasTapeBeenUsed(tapeName));
-  }
-
-  resetTapeUsage(path?: string) {
-    if (!path) {
-      this.tapeStores.forEach((tapeStore) => tapeStore.resetTapeUsage());
-
-      return true;
-    }
-
-    const store = this.findTapeStore(path);
-
-    if (store) {
-      store.resetTapeUsage();
-
-      return true;
-    }
-
-    return false;
-  }
-
   getAllTapes(): Tape[] {
     return this.tapeStores.reduce(
       (tapes, tapeStore) => {
-        return [...tapes, ...tapeStore.tapes];
+        return [...tapes, ...tapeStore.getAllTapes()];
       },
       [] as Tape[],
     );

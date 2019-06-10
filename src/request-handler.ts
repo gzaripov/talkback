@@ -1,10 +1,16 @@
-import fetch, { Headers as FetchHeaders } from 'node-fetch';
-import { createTape, cloneTape } from './tape';
-import { validateRecord, validateFallbackMode, Context, RecordMode } from './options';
+import assert from 'assert';
 import TapeStoreManager from './tape-store-manager';
-import { Request, Response } from './http';
-import { Tape } from './tape';
-import { assertBoolean } from './utils/asserts';
+import { Request, Response, Headers } from './http';
+import Tape from './tape';
+import {
+  Context,
+  validateRecord,
+  validateFallbackMode,
+  RecordMode,
+  RecordModes,
+  FallbackModes,
+} from './context';
+
 export default class RequestHandler {
   private tapeStoreManager: TapeStoreManager;
   private context: Context;
@@ -14,127 +20,96 @@ export default class RequestHandler {
     this.context = context;
   }
 
-  async findTape(req: Request, recordMode: RecordMode): Promise<Tape> {
-    const tapeStore = this.tapeStoreManager.getTapeStore(req);
-    const matchingTape = tapeStore.find(req);
+  async findResponse(request: Request, recordMode: RecordMode): Promise<Response> {
+    const tapeStore = this.tapeStoreManager.getTapeStore(request);
+    const matchingTape = tapeStore.find(request);
 
-    if (recordMode === 'OVERWRITE') {
-      const res = await this.makeRealRequest(req);
+    if (recordMode === RecordModes.OVERWRITE) {
+      const response = await this.makeRealRequest(request);
 
-      const tape = createTape(req, res, this.context);
+      const tape = new Tape(request, response, this.context);
+
+      if (matchingTape) {
+        tapeStore.delete(matchingTape);
+      }
 
       tapeStore.save(tape);
 
-      return tape;
+      return response;
     }
 
     if (matchingTape) {
-      return matchingTape;
+      return matchingTape.response;
     }
 
-    if (recordMode === 'NEW') {
-      const res = await this.makeRealRequest(req);
+    if (recordMode === RecordModes.NEW) {
+      const response = await this.makeRealRequest(request);
 
-      const tape = createTape(req, res, this.context);
+      const tape = new Tape(request, response, this.context);
 
       tapeStore.save(tape);
 
-      return tape;
+      return tape.response;
     }
 
-    assertBoolean(recordMode === 'DISABLED', `Invalid recordMode ${recordMode}`);
+    assert(recordMode === RecordModes.DISABLED, `Invalid recordMode ${recordMode}`);
 
-    const res = await this.onNoRecord(req);
-
-    return createTape(req, res, this.context);
+    return this.onNoRecord(request);
   }
 
-  async handle(req: Request): Promise<Response> {
+  async handle(request: Request): Promise<Response> {
     const recordMode =
       typeof this.context.recordMode !== 'function'
         ? this.context.recordMode
-        : this.context.recordMode(req);
+        : this.context.recordMode(request.toJson());
 
     validateRecord(recordMode);
 
-    if (recordMode === 'PROXY') {
-      return await this.makeRealRequest(req);
+    if (recordMode === RecordModes.PROXY) {
+      return await this.makeRealRequest(request);
     }
 
-    const tape = await this.findTape(req, recordMode);
+    const response = await this.findResponse(request, recordMode);
 
-    if (this.context.tapeDecorator) {
-      const resTape = this.context.tapeDecorator(cloneTape(tape));
-
-      if (resTape.response.body && resTape.response.headers['content-length']) {
-        resTape.response.headers['content-length'] = [resTape.response.body.byteLength.toString()];
-      }
-
-      return resTape.response;
-    }
-
-    return tape.response;
+    return response;
   }
 
-  async onNoRecord(req: Request): Promise<Response> {
+  async onNoRecord(request: Request): Promise<Response> {
     const fallbackMode =
       typeof this.context.fallbackMode !== 'function'
         ? this.context.fallbackMode
-        : this.context.fallbackMode(req);
+        : this.context.fallbackMode(request.toJson());
 
     validateFallbackMode(fallbackMode);
 
     this.context.logger.log(
-      `Tape for ${req.url} not found and recording is disabled (fallbackMode: ${fallbackMode})`,
+      `Tape for ${request.pathname} not found and recording is disabled (fallbackMode: ${fallbackMode})`,
     );
-    this.context.logger.log({
-      url: req.url,
-      headers: req.headers,
+
+    this.context.logger.debug({
+      url: request.pathname,
+      request: request.toJson(),
     });
 
-    if (fallbackMode === 'PROXY') {
-      return await this.makeRealRequest(req);
+    if (fallbackMode === FallbackModes.PROXY) {
+      return await this.makeRealRequest(request);
     }
 
-    return {
+    return new Response({
       status: 404,
-      headers: { 'content-type': ['text/plain'] },
-      body: Buffer.from('talkback - tape not found'),
-    };
+      headers: new Headers({ 'content-type': ['text/plain'] }),
+      body: Buffer.from('flyback - tape not found'),
+    });
   }
 
-  async makeRealRequest(req: Request): Promise<Response> {
-    let { body } = req;
-    const { method, url } = req;
-
-    // delete host header to avoid errors i.e. Domain not found: localhost:9001
-    delete req.headers.host;
-
-    const headers = ({ ...req.headers } as any) as FetchHeaders;
-
+  async makeRealRequest(request: Request): Promise<Response> {
     const endpoint = this.context.proxyUrl;
 
-    this.context.logger.log(`Making real request to ${endpoint}${url}`);
+    assert(
+      endpoint,
+      'Cant make request to proxy without url, pass proxyUrl or change record mode to DISABLED',
+    );
 
-    if (method === 'GET' || method === 'HEAD') {
-      body = undefined;
-    }
-
-    const agent = this.context.agent || undefined;
-    const fRes = await fetch(endpoint + url, {
-      method,
-      headers,
-      body,
-      compress: false,
-      redirect: 'manual',
-      agent,
-    });
-    const buff = await fRes.buffer();
-
-    return {
-      status: fRes.status,
-      headers: fRes.headers.raw(),
-      body: buff,
-    };
+    return request.send(endpoint as string);
   }
 }
